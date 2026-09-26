@@ -1,0 +1,677 @@
+
+import cv2
+import mediapipe as mp
+import tkinter as tk
+import math
+import threading
+import os
+import subprocess
+import time
+
+# ============================================================
+# EINSTELLUNGEN
+# ============================================================
+
+CAMERA_WIDTH = 640
+CAMERA_HEIGHT = 480
+
+MAX_STEERING_ANGLE = 450
+SMOOTHING = 0.15
+
+# Bereiche für A/D
+LEFT_LIMIT = 0.40
+RIGHT_LIMIT = 0.60
+
+MODEL_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "hand_landmarker.task"
+)
+
+# ============================================================
+# GLOBALE VARIABLEN
+# ============================================================
+
+hand_x = 0.5
+hand_detected = False
+
+current_angle = 0
+
+last_key = None
+
+running = True
+
+
+# ============================================================
+# YDOTOOL
+# ============================================================
+
+def key_down(key):
+    """
+    Hält eine Taste gedrückt.
+    """
+
+    subprocess.Popen([
+        "ydotool",
+        "key",
+        key
+    ])
+
+
+def key_up(key):
+    """
+    Lässt eine Taste los.
+    """
+
+    subprocess.Popen([
+        "ydotool",
+        "key",
+        key
+    ])
+
+
+# Linux-Keycodes:
+# A = 30
+# D = 32
+
+A_KEY = "30:1"
+A_UP = "30:0"
+
+D_KEY = "32:1"
+D_UP = "32:0"
+
+
+def press_a():
+
+    subprocess.Popen([
+        "ydotool",
+        "key",
+        A_KEY
+    ])
+
+
+def release_a():
+
+    subprocess.Popen([
+        "ydotool",
+        "key",
+        A_UP
+    ])
+
+
+def press_d():
+
+    subprocess.Popen([
+        "ydotool",
+        "key",
+        D_KEY
+    ])
+
+
+def release_d():
+
+    subprocess.Popen([
+        "ydotool",
+        "key",
+        D_UP
+    ])
+
+
+# ============================================================
+# MEDIAPIPE
+# ============================================================
+
+BaseOptions = mp.tasks.BaseOptions
+VisionRunningMode = mp.tasks.vision.RunningMode
+
+HandLandmarker = mp.tasks.vision.HandLandmarker
+HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
+
+
+def on_hand_result(result, output_image, timestamp_ms):
+
+    global hand_x
+    global hand_detected
+
+    hand_detected = False
+
+    if result.hand_landmarks:
+
+        hand = result.hand_landmarks[0]
+
+        # Zeigefinger-Spitze
+        hand_x = hand[8].x
+
+        hand_detected = True
+
+
+options = HandLandmarkerOptions(
+
+    base_options=BaseOptions(
+        model_asset_path=MODEL_PATH
+    ),
+
+    running_mode=VisionRunningMode.LIVE_STREAM,
+
+    num_hands=1,
+
+    min_hand_detection_confidence=0.5,
+
+    min_hand_presence_confidence=0.5,
+
+    min_tracking_confidence=0.5,
+
+    result_callback=on_hand_result
+)
+
+
+landmarker = HandLandmarker.create_from_options(
+    options
+)
+
+
+# ============================================================
+# WEBCAM
+# ============================================================
+
+def camera_loop():
+
+    global running
+
+    camera = cv2.VideoCapture(0)
+
+    camera.set(
+        cv2.CAP_PROP_FRAME_WIDTH,
+        CAMERA_WIDTH
+    )
+
+    camera.set(
+        cv2.CAP_PROP_FRAME_HEIGHT,
+        CAMERA_HEIGHT
+    )
+
+    timestamp = 0
+
+    while running:
+
+        success, frame = camera.read()
+
+        if not success:
+            continue
+
+        # Spiegeln
+        frame = cv2.flip(frame, 1)
+
+        # BGR -> RGB
+        rgb = cv2.cvtColor(
+            frame,
+            cv2.COLOR_BGR2RGB
+        )
+
+        mp_image = mp.Image(
+            image_format=mp.ImageFormat.SRGB,
+            data=rgb
+        )
+
+        timestamp += 1
+
+        landmarker.detect_async(
+            mp_image,
+            timestamp
+        )
+
+        # ====================================================
+        # WEBCAM ANZEIGE
+        # ====================================================
+
+        if hand_detected:
+
+            cv2.putText(
+                frame,
+                "HAND ERKANNT",
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 255, 0),
+                2
+            )
+
+            px = int(
+                hand_x * CAMERA_WIDTH
+            )
+
+            cv2.line(
+                frame,
+                (px, 0),
+                (px, CAMERA_HEIGHT),
+                (0, 0, 255),
+                2
+            )
+
+            # Anzeige
+            if hand_x < LEFT_LIMIT:
+
+                cv2.putText(
+                    frame,
+                    "A = LINKS",
+                    (20, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 255, 255),
+                    2
+                )
+
+            elif hand_x > RIGHT_LIMIT:
+
+                cv2.putText(
+                    frame,
+                    "D = RECHTS",
+                    (20, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 255, 255),
+                    2
+                )
+
+            else:
+
+                cv2.putText(
+                    frame,
+                    "GERADE",
+                    (20, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (255, 255, 255),
+                    2
+                )
+
+        else:
+
+            cv2.putText(
+                frame,
+                "KEINE HAND",
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 0, 255),
+                2
+            )
+
+        cv2.imshow(
+            "Webcam - Steering",
+            frame
+        )
+
+        # ESC
+        if cv2.waitKey(1) & 0xFF == 27:
+
+            running = False
+
+            break
+
+    camera.release()
+
+    cv2.destroyAllWindows()
+
+
+# ============================================================
+# TKINTER
+# ============================================================
+
+root = tk.Tk()
+
+root.title(
+    "🚗 Webcam Steering Wheel"
+)
+
+root.geometry(
+    "800x700"
+)
+
+root.configure(
+    bg="#181818"
+)
+
+canvas = tk.Canvas(
+    root,
+    width=800,
+    height=700,
+    bg="#181818",
+    highlightthickness=0
+)
+
+canvas.pack()
+
+
+center_x = 400
+center_y = 350
+
+wheel_radius = 180
+
+
+# ============================================================
+# LENKRAD ZEICHNEN
+# ============================================================
+
+def draw_wheel():
+
+    canvas.delete("all")
+
+    canvas.create_text(
+        400,
+        40,
+        text="WEBCAM STEERING",
+        fill="white",
+        font=("Arial", 26, "bold")
+    )
+
+    # Status
+    if hand_detected:
+
+        status = "🟢 HAND ERKANNT"
+        status_color = "#00ff66"
+
+    else:
+
+        status = "🔴 KEINE HAND"
+        status_color = "#ff4444"
+
+    canvas.create_text(
+        400,
+        85,
+        text=status,
+        fill=status_color,
+        font=("Arial", 18, "bold")
+    )
+
+    # Lenkrad
+    canvas.create_oval(
+        center_x - wheel_radius,
+        center_y - wheel_radius,
+        center_x + wheel_radius,
+        center_y + wheel_radius,
+        outline="white",
+        width=18
+    )
+
+    angle_rad = math.radians(
+        current_angle
+    )
+
+    # Speichen
+    for i in range(3):
+
+        a = (
+            angle_rad +
+            math.radians(i * 120)
+        )
+
+        x = (
+            center_x +
+            math.cos(a) *
+            wheel_radius
+        )
+
+        y = (
+            center_y +
+            math.sin(a) *
+            wheel_radius
+        )
+
+        canvas.create_line(
+            center_x,
+            center_y,
+            x,
+            y,
+            fill="white",
+            width=14
+        )
+
+    # Mitte
+    canvas.create_oval(
+        center_x - 45,
+        center_y - 45,
+        center_x + 45,
+        center_y + 45,
+        fill="#303030",
+        outline="white",
+        width=5
+    )
+
+    # Rote Markierung
+    marker_angle = (
+        angle_rad -
+        math.pi / 2
+    )
+
+    x1 = (
+        center_x +
+        math.cos(marker_angle) *
+        (wheel_radius - 5)
+    )
+
+    y1 = (
+        center_y +
+        math.sin(marker_angle) *
+        (wheel_radius - 5)
+    )
+
+    x2 = (
+        center_x +
+        math.cos(marker_angle) *
+        (wheel_radius + 18)
+    )
+
+    y2 = (
+        center_y +
+        math.sin(marker_angle) *
+        (wheel_radius + 18)
+    )
+
+    canvas.create_line(
+        x1,
+        y1,
+        x2,
+        y2,
+        fill="red",
+        width=10
+    )
+
+    # Winkel
+    canvas.create_text(
+        400,
+        590,
+        text=f"Lenkwinkel: {int(current_angle)}°",
+        fill="white",
+        font=("Arial", 24, "bold")
+    )
+
+    # Richtung
+    if current_angle < -20:
+
+        direction = "⬅ LINKS"
+
+    elif current_angle > 20:
+
+        direction = "RECHTS ➡"
+
+    else:
+
+        direction = "⬆ GERADE"
+
+    canvas.create_text(
+        400,
+        635,
+        text=direction,
+        fill="white",
+        font=("Arial", 22, "bold")
+    )
+
+
+# ============================================================
+# STEUERUNG
+# ============================================================
+
+def update_steering():
+
+    global current_angle
+    global last_key
+
+    if hand_detected:
+
+        # Handposition -> Lenkwinkel
+        target_angle = (
+            (hand_x - 0.5)
+            * 2
+            * MAX_STEERING_ANGLE
+        )
+
+        target_angle = max(
+            -MAX_STEERING_ANGLE,
+            min(
+                MAX_STEERING_ANGLE,
+                target_angle
+            )
+        )
+
+        # Lenkrad glätten
+        current_angle += (
+            target_angle -
+            current_angle
+        ) * SMOOTHING
+
+
+        # ====================================================
+        # LINKS -> A
+        # ====================================================
+
+        if hand_x < LEFT_LIMIT:
+
+            if last_key != "a":
+
+                if last_key == "d":
+
+                    release_d()
+
+                press_a()
+
+                last_key = "a"
+
+
+        # ====================================================
+        # RECHTS -> D
+        # ====================================================
+
+        elif hand_x > RIGHT_LIMIT:
+
+            if last_key != "d":
+
+                if last_key == "a":
+
+                    release_a()
+
+                press_d()
+
+                last_key = "d"
+
+
+        # ====================================================
+        # MITTE -> ALLES LOSLASSEN
+        # ====================================================
+
+        else:
+
+            if last_key == "a":
+
+                release_a()
+
+            elif last_key == "d":
+
+                release_d()
+
+            last_key = None
+
+
+    # ========================================================
+    # KEINE HAND
+    # ========================================================
+
+    else:
+
+        if last_key == "a":
+
+            release_a()
+
+        elif last_key == "d":
+
+            release_d()
+
+        last_key = None
+
+        current_angle *= 0.92
+
+
+    draw_wheel()
+
+    root.after(
+        16,
+        update_steering
+    )
+
+
+# ============================================================
+# BEENDEN
+# ============================================================
+
+def close_program():
+
+    global running
+
+    running = False
+
+    # Sicherheit
+    release_a()
+    release_d()
+
+    try:
+
+        landmarker.close()
+
+    except:
+
+        pass
+
+    root.destroy()
+
+
+root.protocol(
+    "WM_DELETE_WINDOW",
+    close_program
+)
+
+
+# ============================================================
+# KAMERA THREAD
+# ============================================================
+
+camera_thread = threading.Thread(
+    target=camera_loop,
+    daemon=True
+)
+
+camera_thread.start()
+
+
+# ============================================================
+# START
+# ============================================================
+
+update_steering()
+
+root.mainloop()
+
+running = False
+
+# Sicherheit
+release_a()
+release_d()
+
